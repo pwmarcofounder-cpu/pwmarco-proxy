@@ -1,9 +1,11 @@
 export async function onRequest(context) {
   const { request } = context;
   const url = new URL(request.url);
-  const proxyHost = url.hostname; // Aapka Cloudflare Pages domain
+  const proxyHost = url.hostname; 
+  const vercelHost = 'lite-pwmarco.vercel.app';
+  const videoHost = 'rolexcoderz.com';
 
-  // 1. CORS Preflight (Video Player Buffer block rokne ke liye)
+  // 1. Handle CORS Preflight
   if (request.method === 'OPTIONS') {
     return new Response(null, {
       headers: {
@@ -15,17 +17,11 @@ export async function onRequest(context) {
     });
   }
 
-  const vercelHost = 'lite-pwmarco.vercel.app';
-  const videoHost = 'rolexcoderz.com'; // <-- TYPO FIXED ('z' use kiya hai)
-
-  // 2. Routing Logic - Decide karein traffic kahan jayega
+  // 2. Routing Logic
   let targetHost = vercelHost;
-  
-  // Agar URL mein stream API ka path hai
   if (url.pathname.startsWith('/RC/') || url.pathname.includes('rcx.php')) {
     targetHost = videoHost;
   }
-
   url.hostname = targetHost;
 
   const modifiedRequest = new Request(url.toString(), {
@@ -35,20 +31,24 @@ export async function onRequest(context) {
     redirect: 'manual'
   });
 
-  // Headers Spoofing taaki origin server block na kare
+  // Host aur Origin spoof karein
   modifiedRequest.headers.set('Host', targetHost);
   modifiedRequest.headers.set('Origin', `https://${targetHost}`);
   if (targetHost === videoHost) {
     modifiedRequest.headers.set('Referer', `https://${videoHost}/`);
   }
 
-  // 3. Response Fetch Karna
+  // ZAROORI: Gzip compression disable karein taaki hum code modify kar sakein
+  modifiedRequest.headers.delete('accept-encoding');
+
   let response = await fetch(modifiedRequest);
   let newHeaders = new Headers(response.headers);
-  
   newHeaders.set('Access-Control-Allow-Origin', '*');
+  
+  // CSP hata dein taaki hamari injected script block na ho
+  newHeaders.delete('content-security-policy'); 
 
-  // Redirects rewrite
+  // Redirect handling
   if (newHeaders.has('Location')) {
     let loc = newHeaders.get('Location');
     loc = loc.replace(targetHost, proxyHost).replace(videoHost, proxyHost).replace(vercelHost, proxyHost);
@@ -57,35 +57,69 @@ export async function onRequest(context) {
 
   const contentType = newHeaders.get('content-type') || '';
 
-  // 4. Sabhi JSON, JS, aur Stream Manifests ko intercept karke rewrite karna
-  const isText = contentType.includes('text/') || 
-                 contentType.includes('application/json') || 
-                 contentType.includes('application/javascript') || 
-                 contentType.includes('application/dash+xml') || 
-                 contentType.includes('application/x-mpegurl') ||
-                 contentType.includes('application/vnd.apple.mpegurl');
+  // 3. HTML Rewriter + JavaScript Injection
+  if (contentType.includes('text/html')) {
+    const interceptorScript = `
+      <script>
+        (function() {
+          const proxy = "${proxyHost}";
+          const target = "${videoHost}";
+          
+          // Browser ke fetch API ko hijack karna
+          const originalFetch = window.fetch;
+          window.fetch = async function() {
+            let args = arguments;
+            if (typeof args[0] === 'string' && args[0].includes(target)) {
+              args[0] = args[0].replace('https://' + target, 'https://' + proxy);
+            } else if (args[0] instanceof Request && args[0].url.includes(target)) {
+              args[0] = new Request(args[0].url.replace('https://' + target, 'https://' + proxy), args[0]);
+            }
+            return originalFetch.apply(this, args);
+          };
 
-  if (isText) {
-    let text = await response.text();
-    
-    // Vercel aur RolexCoderz dono domains ko proxy URL se replace karein
-    text = text.replaceAll(`https://${vercelHost}`, `https://${proxyHost}`);
-    text = text.replaceAll(`https:\\/\\/${vercelHost}`, `https:\\/\\/${proxyHost}`);
-    text = text.replaceAll(vercelHost, proxyHost);
-    
-    text = text.replaceAll(`https://${videoHost}`, `https://${proxyHost}`);
-    text = text.replaceAll(`https:\\/\\/${videoHost}`, `https:\\/\\/${proxyHost}`);
-    text = text.replaceAll(videoHost, proxyHost);
+          // XHR (AJAX) ko hijack karna
+          const originalOpen = XMLHttpRequest.prototype.open;
+          XMLHttpRequest.prototype.open = function(method, url) {
+            if (typeof url === 'string' && url.includes(target)) {
+              url = url.replace('https://' + target, 'https://' + proxy);
+            }
+            return originalOpen.apply(this, arguments);
+          };
+        })();
+      </script>
+    `;
 
-    return new Response(text, {
-      status: response.status,
-      headers: newHeaders
-    });
+    const rewriter = new HTMLRewriter()
+      .on('head', {
+        element(element) {
+          // Page load hote hi sabse pehle ye script run hogi
+          element.prepend(interceptorScript, { html: true });
+        }
+      })
+      .on('*', {
+        element(el) {
+          ['href', 'src', 'data-url', 'action'].forEach(attr => {
+            if (el.hasAttribute(attr)) {
+              let val = el.getAttribute(attr);
+              val = val.replace(`https://${vercelHost}`, `https://${proxyHost}`)
+                       .replace(`https://${videoHost}`, `https://${proxyHost}`);
+              el.setAttribute(attr, val);
+            }
+          });
+        }
+      });
+
+    return rewriter.transform(response);
   }
 
-  // 5. Video Segments (m4s, mp4) ko direct buffer pass karna
-  return new Response(response.body, {
-    status: response.status,
-    headers: newHeaders
-  });
+  // 4. API / JSON Backend Rewrite (Backup)
+  if (contentType.includes('application/json') || contentType.includes('application/javascript')) {
+    let text = await response.text();
+    text = text.replaceAll(vercelHost, proxyHost);
+    text = text.replaceAll(videoHost, proxyHost);
+    return new Response(text, { status: response.status, headers: newHeaders });
+  }
+
+  // 5. Video Stream
+  return new Response(response.body, { status: response.status, headers: newHeaders });
 }
