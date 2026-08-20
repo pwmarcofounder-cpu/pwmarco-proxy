@@ -1,97 +1,93 @@
 export async function onRequest(context) {
   const { request } = context;
   const url = new URL(request.url);
-  
-  const originalHost = url.hostname;
-  const vercelHost = 'lite-pwmarco.vercel.app';
-  const videoHost = 'rolexcoderx.com';
+  const proxyHost = url.hostname; // Aapka Cloudflare Pages domain
 
-  // 1. CORS Preflight (OPTIONS) Handle karna taaki video player block na ho
+  // 1. CORS Preflight Handle karna (Taki video player block na ho)
   if (request.method === 'OPTIONS') {
     return new Response(null, {
       headers: {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
         'Access-Control-Allow-Headers': request.headers.get('Access-Control-Request-Headers') || '*',
+        'Access-Control-Max-Age': '86400',
       }
     });
   }
 
-  // 2. Decide karna ki request kahan bhejni hai (Routing)
-  // Agar request '/RC/' se shuru hoti hai ya stream URL hai, toh videoHost par bhejo
+  const vercelHost = 'lite-pwmarco.vercel.app';
+  const videoHost = 'rolexcoderx.com';
+
+  // 2. Routing Logic
   let targetHost = vercelHost;
+  // Agar path /RC/ se shuru ho ya rcx.php ho
   if (url.pathname.startsWith('/RC/') || url.pathname.includes('rcx.php')) {
     targetHost = videoHost;
   }
 
   url.hostname = targetHost;
 
-  // 3. Naya request object banana
   const modifiedRequest = new Request(url.toString(), {
     method: request.method,
     headers: request.headers,
     body: request.body,
     redirect: 'manual'
   });
-  
-  // Headers spoof karna taaki server error na de
+
+  // Headers spoofing
   modifiedRequest.headers.set('Host', targetHost);
   modifiedRequest.headers.set('Origin', `https://${targetHost}`);
   if (targetHost === videoHost) {
     modifiedRequest.headers.set('Referer', `https://${videoHost}/`);
   }
 
-  // 4. Server se data fetch karna
+  // 3. Fetch Response
   let response = await fetch(modifiedRequest);
-  response = new Response(response.body, response);
+  let newHeaders = new Headers(response.headers);
   
-  // CORS Headers add karna response mein
-  response.headers.set('Access-Control-Allow-Origin', '*');
+  newHeaders.set('Access-Control-Allow-Origin', '*');
 
-  // Agar server redirect (301/302) karta hai
-  if (response.headers.has('Location')) {
-    let location = response.headers.get('Location');
-    location = location.replace(targetHost, originalHost);
-    response.headers.set('Location', location);
+  // Redirects Handle karna
+  if (newHeaders.has('Location')) {
+    let loc = newHeaders.get('Location');
+    loc = loc.replace(targetHost, proxyHost).replace(videoHost, proxyHost).replace(vercelHost, proxyHost);
+    newHeaders.set('Location', loc);
   }
 
-  const contentType = response.headers.get('content-type') || '';
+  const contentType = newHeaders.get('content-type') || '';
 
-  // 5. API API/JSON Responses Rewrite karna (Isse stream URLs app ke andar change ho jayenge)
-  if (contentType.includes('application/json') || contentType.includes('text/plain')) {
+  // 4. Sabhi Text-based files ko intercept karna (JS, JSON, XML, HTML, M3U8, DASH)
+  const isText = contentType.includes('text/') || 
+                 contentType.includes('application/json') || 
+                 contentType.includes('application/javascript') || 
+                 contentType.includes('application/dash+xml') || 
+                 contentType.includes('application/x-mpegurl') ||
+                 contentType.includes('application/vnd.apple.mpegurl');
+
+  if (isText) {
     let text = await response.text();
-    // Normal URLs replace karein
-    text = text.replaceAll(`https://${vercelHost}`, `https://${originalHost}`);
-    text = text.replaceAll(`https://${videoHost}`, `https://${originalHost}`);
-    // Escaped URLs replace karein (jo JSON mein hote hain jaise https:\/\/...)
-    text = text.replaceAll(`https:\\/\\/${vercelHost}`, `https:\\/\\/${originalHost}`);
-    text = text.replaceAll(`https:\\/\\/${videoHost}`, `https:\\/\\/${originalHost}`);
     
+    // Aggressive Replace: Har tarah ke format mein domain ko proxy domain se badalna
+    
+    // Vercel domain replace
+    text = text.replaceAll(`https://${vercelHost}`, `https://${proxyHost}`);
+    text = text.replaceAll(`https:\\/\\/${vercelHost}`, `https:\\/\\/${proxyHost}`);
+    text = text.replaceAll(vercelHost, proxyHost); // Agar bina https ke hai
+    
+    // RolexCoderx domain replace
+    text = text.replaceAll(`https://${videoHost}`, `https://${proxyHost}`);
+    text = text.replaceAll(`https:\\/\\/${videoHost}`, `https:\\/\\/${proxyHost}`);
+    text = text.replaceAll(videoHost, proxyHost); // Hardcoded JS variables ke liye
+
     return new Response(text, {
       status: response.status,
-      headers: response.headers
+      headers: newHeaders
     });
   }
 
-  // 6. HTML Responses Rewrite karna
-  if (contentType.includes('text/html')) {
-    return new HTMLRewriter()
-      .on('*', {
-        element(element) {
-          const attributes = ['href', 'src', 'data-url', 'action'];
-          attributes.forEach(attr => {
-            let val = element.getAttribute(attr);
-            if (val) {
-              val = val.replace(`https://${vercelHost}`, `https://${originalHost}`)
-                       .replace(`https://${videoHost}`, `https://${originalHost}`);
-              element.setAttribute(attr, val);
-            }
-          });
-        }
-      })
-      .transform(response);
-  }
-
-  // 7. Video/Stream (application/octet-stream, mp4, m3u8) ko direct pass karna bina modify kiye
-  return response;
+  // 5. Binary files (mp4, m4s video segments, images) ko bina modify kiye bhejna
+  return new Response(response.body, {
+    status: response.status,
+    headers: newHeaders
+  });
 }
