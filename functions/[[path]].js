@@ -3,7 +3,7 @@ export async function onRequest(context) {
   const url = new URL(request.url);
   const proxyHost = url.hostname; // Aapka Cloudflare Pages domain
 
-  // 1. CORS Preflight Handle karna (Taki video player block na ho)
+  // 1. CORS Preflight (Video Player Buffer block rokne ke liye)
   if (request.method === 'OPTIONS') {
     return new Response(null, {
       headers: {
@@ -16,11 +16,12 @@ export async function onRequest(context) {
   }
 
   const vercelHost = 'lite-pwmarco.vercel.app';
-  const videoHost = 'rolexcoderx.com';
+  const videoHost = 'rolexcoderz.com'; // <-- TYPO FIXED ('z' use kiya hai)
 
-  // 2. Routing Logic
+  // 2. Routing Logic - Decide karein traffic kahan jayega
   let targetHost = vercelHost;
-  // Agar path /RC/ se shuru ho ya rcx.php ho
+  
+  // Agar URL mein stream API ka path hai
   if (url.pathname.startsWith('/RC/') || url.pathname.includes('rcx.php')) {
     targetHost = videoHost;
   }
@@ -34,20 +35,20 @@ export async function onRequest(context) {
     redirect: 'manual'
   });
 
-  // Headers spoofing
+  // Headers Spoofing taaki origin server block na kare
   modifiedRequest.headers.set('Host', targetHost);
   modifiedRequest.headers.set('Origin', `https://${targetHost}`);
   if (targetHost === videoHost) {
     modifiedRequest.headers.set('Referer', `https://${videoHost}/`);
   }
 
-  // 3. Fetch Response
+  // 3. Response Fetch Karna
   let response = await fetch(modifiedRequest);
   let newHeaders = new Headers(response.headers);
   
   newHeaders.set('Access-Control-Allow-Origin', '*');
 
-  // Redirects Handle karna
+  // Redirects rewrite
   if (newHeaders.has('Location')) {
     let loc = newHeaders.get('Location');
     loc = loc.replace(targetHost, proxyHost).replace(videoHost, proxyHost).replace(vercelHost, proxyHost);
@@ -56,7 +57,7 @@ export async function onRequest(context) {
 
   const contentType = newHeaders.get('content-type') || '';
 
-  // 4. Sabhi Text-based files ko intercept karna (JS, JSON, XML, HTML, M3U8, DASH)
+  // 4. Sabhi JSON, JS, aur Stream Manifests ko intercept karke rewrite karna
   const isText = contentType.includes('text/') || 
                  contentType.includes('application/json') || 
                  contentType.includes('application/javascript') || 
@@ -67,17 +68,14 @@ export async function onRequest(context) {
   if (isText) {
     let text = await response.text();
     
-    // Aggressive Replace: Har tarah ke format mein domain ko proxy domain se badalna
-    
-    // Vercel domain replace
+    // Vercel aur RolexCoderz dono domains ko proxy URL se replace karein
     text = text.replaceAll(`https://${vercelHost}`, `https://${proxyHost}`);
     text = text.replaceAll(`https:\\/\\/${vercelHost}`, `https:\\/\\/${proxyHost}`);
-    text = text.replaceAll(vercelHost, proxyHost); // Agar bina https ke hai
+    text = text.replaceAll(vercelHost, proxyHost);
     
-    // RolexCoderx domain replace
     text = text.replaceAll(`https://${videoHost}`, `https://${proxyHost}`);
     text = text.replaceAll(`https:\\/\\/${videoHost}`, `https:\\/\\/${proxyHost}`);
-    text = text.replaceAll(videoHost, proxyHost); // Hardcoded JS variables ke liye
+    text = text.replaceAll(videoHost, proxyHost);
 
     return new Response(text, {
       status: response.status,
@@ -85,7 +83,7 @@ export async function onRequest(context) {
     });
   }
 
-  // 5. Binary files (mp4, m4s video segments, images) ko bina modify kiye bhejna
+  // 5. Video Segments (m4s, mp4) ko direct buffer pass karna
   return new Response(response.body, {
     status: response.status,
     headers: newHeaders
