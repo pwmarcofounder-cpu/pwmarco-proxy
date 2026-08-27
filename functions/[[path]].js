@@ -2,7 +2,7 @@ export async function onRequest(context) {
   const { request } = context;
   const url = new URL(request.url);
   const proxyHost = url.hostname; 
-  const vercelHost = 'kya-re-bheekmange.vercel.app';
+  const vercelHost = 'kya-re-bheekmangya.vercel.app';
   const videoHost = 'rolexcoderz.com';
 
   // 1. Handle CORS Preflight
